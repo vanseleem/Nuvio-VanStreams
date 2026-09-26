@@ -1,0 +1,20 @@
+{
+  "name": "VanStreams",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "vanstreams",
+      "name": "☀️ VanStreams+",
+      "description": "Movies & Series via YTS, Knaben and Torrentio",
+      "version": "1.0.0",
+      "author": "Van",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/vanstreams.js",
+      "enabled": true,
+      "hasSettings": true,
+      "formats": ["mkv", "mp4"],
+      "supportsExternalPlayer": true,
+      "contentLanguage": ["en"]
+    }
+  ]
+}
