@@ -1,12 +1,13 @@
 'use strict';
 
-const TMDB_KEY       = '83d364331c40bfbe29858aeed82f45cc';
-const UA             = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const TMDB_KEY      = '83d364331c40bfbe29858aeed82f45cc';
+const UA            = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 // ── Easy to change source URLs ──────────────────────────────────────
-const TORRENTIO_URL  = 'https://torrentio.strem.fun';   // ← change this to torrentsdb or any other
-const YTS_URL        = 'https://movies-api.accel.li';
-const KNABEN_URL     = 'https://api.knaben.org/v1';
+const TORRENTIO_URL   = 'https://torrentio.strem.fun';   // ← change anytime
+const TORRENTCLAW_URL = 'https://torrentclaw.com/api/stremio'; // ← TorrentClaw API
+const YTS_URL         = 'https://movies-api.accel.li';
+const KNABEN_URL      = 'https://api.knaben.org/v1';
 // ───────────────────────────────────────────────────────────────────
 
 const PROXY_1 = 'https://corsproxy.io/?url=';
@@ -23,10 +24,10 @@ const QUALITY_RANK = {
   '4k': 5, '2160p': 5, 'webrip': 6, 'webdl': 6,
 };
 
-const PRIORITY_PROVIDERS = ['yts', 'knaben', 'torrentsdb', 'eztv', 'nyaasi', 'thepiratebay'];
+const PRIORITY_PROVIDERS = ['yts', 'torrentclaw', 'torrentio', 'knaben', 'torrentsdb', 'eztv', 'nyaasi', 'thepiratebay'];
 
 const ALLOWED_PROVIDERS = [
-  'yts', 'knaben', 'thepiratesbay', 'thepiratebay', 'eztv', 'torrentcsv',
+  'yts', 'torrentclaw', 'knaben', 'thepiratesbay', 'thepiratebay', 'eztv', 'torrentcsv',
   'nyaa', 'nyaasi', 'limetorrent', 'kickasstorrents', 'animetosho', 'tokyotosho',
 ];
 
@@ -43,6 +44,89 @@ const TR = [
   'https://tracker.zhuqiy.com:443/announce',
 ].map(t => '&tr=' + encodeURIComponent(t)).join('');
 
+// ── Helpers ──────────────────────────────────────────────────────────
+
+function buildMagnet(hash, name) {
+  return 'magnet:?xt=urn:btih:' + hash.toLowerCase() + '&dn=' + encodeURIComponent(name) + TR;
+}
+
+function getQuality(str = '') {
+  const s = str.toLowerCase();
+  if (s.includes('4k') || s.includes('2160p') || s.includes('uhd')) return '4k';
+  if (s.includes('1080p') || s.includes('fhd')) return '1080p';
+  if (s.includes('720p') || s.includes(' hd ')) return '720p';
+  if (s.includes('576p')) return '576p';
+  if (s.includes('480p') || s.includes('sdtv') || s.includes(' sd ')) return '480p';
+  if (s.includes('webrip')) return 'webrip';
+  if (s.includes('webdl') || s.includes('web-dl')) return 'webdl';
+  return null;
+}
+
+function getQualityEmoji(quality) {
+  if (quality === '4k')    return '🌟';
+  if (quality === '1080p') return '🔥';
+  if (quality === '720p')  return '💎';
+  return '📱';
+}
+
+function getQualityRank(quality) {
+  const q = (quality || '').toLowerCase();
+  if (['4k','2160p','uhd'].some(x => q.includes(x))) return 4;
+  if (q.includes('1080')) return 3;
+  if (q.includes('720') || q.includes('hd')) return 2;
+  if (q.includes('480') || q.includes('sd')) return 1;
+  return 0;
+}
+
+function getSizeGB(raw, stream) {
+  if (typeof stream?.size === 'number'  && stream.size  > 0) return stream.size  / 1073741824;
+  if (typeof stream?.bytes === 'number' && stream.bytes > 0) return stream.bytes / 1073741824;
+  const m = String(raw).match(/([0-9.]+)\s*([GM]B)/i);
+  if (!m) return null;
+  const val = parseFloat(m[1]);
+  return m[2].toUpperCase() === 'GB' ? val : val / 1024;
+}
+
+function getSeeders(text, stream) {
+  if (typeof stream?.seeders === 'number') return Math.floor(stream.seeders);
+  if (typeof stream?.seeds   === 'number') return Math.floor(stream.seeds);
+  const m = text.match(/🌱\s*(\d+)/) || text.match(/👤\s*(\d+)/) || text.match(/(\d+)\s*seed/i);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+function getAudio(text) {
+  const t = text.toUpperCase();
+  if (t.includes('DUAL AUDIO') || t.includes('DUAL-AUDIO')) return 'Dual-Audio';
+  if (t.includes('MULTI AUDIO') || t.includes('MULTI-AUDIO')) return 'Multi-Audio';
+  if (t.includes('DUBBED')) return 'Dubbed';
+  return 'Single-Audio';
+}
+
+function getCodec(text) {
+  const t = text.toUpperCase();
+  if (t.includes('X265') || t.includes('H265') || t.includes('HEVC')) return 'HEVC';
+  if (t.includes('X264') || t.includes('H264') || t.includes('AVC'))  return 'AVC';
+  if (t.includes('AV1')) return 'AV1';
+  return null;
+}
+
+function getHDR(text) {
+  const t = text.toUpperCase();
+  const tags = [];
+  if (t.includes('DV') || t.includes('DOLBY VISION')) tags.push('DV');
+  if (t.includes('HDR10+'))      tags.push('HDR10+');
+  else if (t.includes('HDR10'))  tags.push('HDR10');
+  else if (t.includes('HDR'))    tags.push('HDR');
+  if (t.includes('ATMOS'))       tags.push('Atmos');
+  return tags.join(' ');
+}
+
+function getInvertedSortTag(value, max = 999999) {
+  const v = Math.max(0, parseInt(value, 10) || 0);
+  return Math.max(0, max - v).toString(2).padStart(20, '0')
+    .split('').map(c => c === '1' ? '\uFEFF' : '\u200B').join('');
+}
+
 async function fetchWithProxy(url) {
   const proxies = [
     url,
@@ -52,254 +136,283 @@ async function fetchWithProxy(url) {
   ];
   for (const p of proxies) {
     try {
-      const r = await fetch(p, { headers: { 'User-Agent': UA } });
+      const r = await fetch(p, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } });
       if (r.ok) return r.json();
     } catch (_) {}
   }
   return null;
 }
 
-function buildMagnet(hash, name) {
-  return 'magnet:?xt=urn:btih:' + hash.toLowerCase() + '&dn=' + encodeURIComponent(name) + TR;
-}
+// ── Stream card formatter (TorrentClaw style) ────────────────────────
 
-function getQuality(str = '') {
-  const s = str.toLowerCase();
-  if (s.includes('4k') || s.includes('2160p') || s.includes('uhd')) return '4k';
-  if (s.includes('1080p'))  return '1080p';
-  if (s.includes('720p'))   return '720p';
-  if (s.includes('576p'))   return '576p';
-  if (s.includes('480p'))   return '480p';
-  if (s.includes('webrip')) return 'webrip';
-  if (s.includes('webdl') || s.includes('web-dl')) return 'webdl';
-  return null;
-}
+function formatStream(stream, rawText, title, isSeries, season, episode, year, settings = {}) {
+  const combined = rawText.replace(/\n/g, ' ');
+  const upper    = combined.toUpperCase();
 
-function getSizeGB(stream) {
-  const raw = stream.title || stream.name || '';
-  const m = raw.match(/💾\s*([\d.]+)\s*(GB|MB)/i) || raw.match(/([\d.]+)\s*(GB|MB)/i);
-  if (!m) return null;
-  const val = parseFloat(m[1]);
-  return m[2].toUpperCase() === 'GB' ? val : val / 1024;
-}
+  const quality      = getQuality(combined) || '1080p';
+  const qualityEmoji = getQualityEmoji(quality);
+  const qualityRank  = getQualityRank(quality);
+  const seeders      = getSeeders(combined, stream);
+  const sizeGB       = getSizeGB(combined, stream);
+  const sizeMB       = sizeGB ? Math.floor(sizeGB * 1024) : 0;
+  const sizeStr      = sizeGB ? (sizeGB >= 1 ? sizeGB.toFixed(2) + ' GB' : sizeMB + ' MB') : 'N/A';
 
-function getSeeders(stream) {
-  if (stream._seeders != null) return stream._seeders;
-  if (stream.behaviorHints?.seeders) return stream.behaviorHints.seeders;
-  const m = (stream.title || '').match(/👤\s*(\d+)/);
-  return m ? parseInt(m[1], 10) : 0;
-}
-
-function getLangLine(str = '') {
-  const lower = str.toLowerCase();
-  const found = [];
-  const checks = [
-    [/\benglish\b/, 'English'], [/\bjapanese\b/, 'Japanese'], [/\bhindi\b/, 'Hindi'],
-    [/\bfrench\b/, 'French'], [/\bgerman\b/, 'German'], [/\bspanish\b/, 'Spanish'],
-    [/\bitalian\b/, 'Italian'], [/\brussian\b/, 'Russian'], [/\bkorean\b/, 'Korean'],
-    [/\bchinese\b/, 'Chinese'], [/\barabic\b/, 'Arabic'], [/\bportuguese\b/, 'Portuguese'],
-    [/\bturkish\b/, 'Turkish'], [/\bpolish\b/, 'Polish'], [/\bdutch\b/, 'Dutch'],
-    [/\bczech\b/, 'Czech'], [/\bswedish\b/, 'Swedish'], [/\bnorwegian\b/, 'Norwegian'],
-    [/\bdanish\b/, 'Danish'], [/\bfinnish\b/, 'Finnish'], [/\bromanian\b/, 'Romanian'],
-    [/\bgreek\b/, 'Greek'], [/\bhebrew\b/, 'Hebrew'], [/\bthai\b/, 'Thai'],
-    [/\bindonesian\b/, 'Indonesian'], [/\bvietnamese\b/, 'Vietnamese'],
-    [/\btamil\b/, 'Tamil'], [/\btelugu\b/, 'Telugu'], [/\burdu\b/, 'Urdu'],
-    [/\bdubbed\b/, 'Dubbed'], [/\bdual[\s\-]audio\b/, 'Dual Audio'],
-    [/\bmulti[\s\-]audio\b/, 'Multi Audio'], [/\bmulti\b/, 'Multi'],
-  ];
-  for (const [re, label] of checks) {
-    if (re.test(lower)) {
-      if (label === 'Multi' && found.includes('Multi Audio')) continue;
-      found.push(label);
-    }
+  // Provider label
+  let provider = stream._provider || 'Unknown';
+  const provMatch = combined.match(/⚙️\s*(\S+)/);
+  if (provMatch) {
+    provider = provMatch[1].toLowerCase().replace(/\.(to|com|org|net|io)$/, '');
+    if (provider === 'thepiratebay') provider = 'TPB';
+    if (provider === 'nyaa.si')      provider = 'Nyaa';
+    if (provider === 'limetorrents') provider = 'LimeTorrents';
+    if (provider === 'kat')          provider = 'KAT';
   }
-  return [...new Set(found)].join(' / ');
-}
+  provider = provider.charAt(0).toUpperCase() + provider.slice(1);
 
-function processStreams(streams, type) {
-  const maxSize = type === 'series' ? MAX_SIZE_GB_SERIES : MAX_SIZE_GB_MOVIE;
-  const filtered = streams.filter(s => {
-    if (!s.infoHash && !s.url) return false;
-    if (s._provider && !ALLOWED_PROVIDERS.includes(s._provider.toLowerCase())) return false;
-    const q = s._quality || getQuality(s.title || s.name || '');
-    if (!q || !ALLOWED_QUALITIES.includes(q)) return false;
-    const sizeGB = s._sizeGB ?? getSizeGB(s);
-    if (sizeGB !== null && sizeGB > maxSize) return false;
-    return true;
-  });
-  const seen = new Set();
-  const unique = filtered.filter(s => {
-    const key = (s.infoHash || '').toLowerCase();
-    if (!key) return true;
-    if (seen.has(key)) return false;
-    seen.add(key); return true;
-  });
-  const byQuality = {};
-  unique.forEach(s => {
-    const q = s._quality || getQuality(s.title || s.name || '') || 'unknown';
-    if (!byQuality[q]) byQuality[q] = [];
-    byQuality[q].push(s);
-  });
-  for (const q in byQuality) {
-    byQuality[q].sort((a, b) => {
-      const rankA = PRIORITY_PROVIDERS.indexOf((a._source || '').toLowerCase());
-      const rankB = PRIORITY_PROVIDERS.indexOf((b._source || '').toLowerCase());
-      const pA = rankA === -1 ? 999 : rankA;
-      const pB = rankB === -1 ? 999 : rankB;
-      if (pA !== pB) return pA - pB;
-      return getSeeders(b) - getSeeders(a);
-    });
+  const audio = getAudio(upper);
+  const codec = getCodec(upper);
+  const hdr   = getHDR(upper);
+
+  // Filters
+  if (settings.minQuality && settings.minQuality !== 'any') {
+    if (qualityRank < getQualityRank(settings.minQuality)) return null;
   }
-  const sortedQualities = Object.keys(byQuality).sort((a, b) => (QUALITY_RANK[a] || 99) - (QUALITY_RANK[b] || 99));
-  const result = [];
-  sortedQualities.forEach(q => result.push(...byQuality[q].slice(0, LINKS_PER_QUALITY)));
-  return result;
+  const maxSize = isSeries ? MAX_SIZE_GB_SERIES : MAX_SIZE_GB_MOVIE;
+  if (sizeGB && sizeGB > maxSize) return null;
+
+  // Sort tag
+  let sortVal;
+  if (settings.sortBy === 'size')         sortVal = sizeMB;
+  else if (settings.sortBy === 'quality') sortVal = qualityRank * 10000 + seeders;
+  else                                    sortVal = seeders;
+  const sortTag = getInvertedSortTag(sortVal);
+
+  // Card lines — exact TorrentClaw format
+  const name = `${sortTag}☀️ VanStreams+ | ${quality.toUpperCase()} | 🌱${seeders}`;
+
+  const mediaLine = isSeries
+    ? `📺 ${title} | S${String(season).padStart(2,'0')} E${String(episode).padStart(2,'00')}`
+    : `🎬 ${title} - ${year}`;
+
+  const detailParts = [qualityEmoji + ' ' + quality];
+  if (codec) detailParts.push(codec);
+  if (hdr)   detailParts.push(hdr);
+  detailParts.push(audio);
+  const detailLine = detailParts.join(' • ');
+
+  const statsLine  = `🌱 ${seeders} | 💾 ${sizeStr} | 🔗 ${provider}`;
+  const titleText  = `${mediaLine}\n${detailLine}\n${statsLine}`;
+  const url        = stream.url || (stream.infoHash ? buildMagnet(stream.infoHash, title) : '');
+
+  return {
+    seeders, sizeBytes: sizeGB ? Math.floor(sizeGB * 1073741824) : 0, qualityRank,
+    data: { name, title: titleText, description: titleText, url },
+  };
 }
 
-async function tmdbLookup(tmdbId, type) {
-  try {
-    const isSeries = type === 'tv' || type === 'series';
-    const url = `https://api.themoviedb.org/3/${isSeries ? 'tv' : 'movie'}/${tmdbId}?api_key=${TMDB_KEY}&append_to_response=external_ids`;
-    const r = await fetch(url);
-    if (!r.ok) return null;
-    const d = await r.json();
-    const imdbId = d.external_ids?.imdb_id || d.imdb_id || tmdbId;
-    const title  = d.title || d.name || '';
-    const year   = (d.release_date || d.first_air_date || '').slice(0, 4);
-    return { imdbId, title, year };
-  } catch (_) { return null; }
-}
+// ── Sources ──────────────────────────────────────────────────────────
 
+// 1. YTS
 async function scrapeYTS(imdbId, title, year) {
   try {
-    const url = `${YTS_URL}/api/v2/list_movies.json?query_term=${imdbId}&limit=10`;
-    const r = await fetch(url, { headers: { 'User-Agent': UA } });
+    const r = await fetch(`${YTS_URL}/api/v2/list_movies.json?query_term=${imdbId}&limit=10`, { headers: { 'User-Agent': UA } });
     if (!r.ok) return [];
     const data = await r.json();
     if (data.status !== 'ok' || !data.data?.movies?.length) return [];
-    const streams = [];
+    const out = [];
     for (const movie of data.data.movies) {
       if (movie.imdb_code && movie.imdb_code !== imdbId) continue;
       for (const t of (movie.torrents || [])) {
         if (!t.hash) continue;
-        const qualityStr = `${t.quality} ${t.type || ''}`.trim();
         const sizeGB = t.size_bytes ? t.size_bytes / 1073741824 : null;
-        const sizeStr = sizeGB ? sizeGB.toFixed(2) + ' GB' : (t.size || '');
-        const langLine = getLangLine(qualityStr);
-        streams.push({
+        out.push({
           infoHash:  t.hash.toLowerCase(),
-          name:      qualityStr,
-          title:     `☀️ ${title} (${year})\n🌱 ${t.seeds || 0}\n💾 ${sizeStr}\n🏅 YTS${langLine ? '\n🔊 ' + langLine : ''}`,
-          url:       buildMagnet(t.hash, movie.title || title),
-          _quality:  getQuality(qualityStr),
-          _seeders:  t.seeds || 0,
-          _sizeGB:   sizeGB,
-          _source:   'yts',
+          name:      `${t.quality} ${t.type || ''}`.trim(),
+          title:     `🌱 ${t.seeds || 0}\n💾 ${sizeGB ? sizeGB.toFixed(2) + ' GB' : t.size || ''}\n🔗 YTS`,
           _provider: 'yts',
+          seeds:     t.seeds || 0,
+          size:      t.size_bytes || 0,
         });
       }
     }
-    return streams;
+    return out;
   } catch (_) { return []; }
 }
 
-async function scrapeKnaben(title, year, isSeries, season, episode) {
-  if (!title) return [];
-  try {
-    let query = title;
-    if (year && !isSeries) query += ' ' + year;
-    if (isSeries && season && episode)
-      query += ` S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
-    const categories = isSeries ? [5000000, 5001000] : [2000000, 2001000];
-    const r = await fetch(KNABEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': UA },
-      body: JSON.stringify({ search_type: '75%', search_field: 'title', query, order_by: 'seeders', order_direction: 'desc', categories, from: 0, size: 40, hide_unsafe: true, hide_xxx: true }),
-    });
-    if (!r.ok) return [];
-    const data = await r.json();
-    if (!data?.hits?.length) return [];
-    const streams = [];
-    for (const hit of data.hits) {
-      if (!hit.magnetUrl && !hit.hash) continue;
-      const magnet = hit.magnetUrl || buildMagnet(hit.hash, hit.title || '');
-      const hashMatch = magnet.match(/btih:([a-fA-F0-9]{32,40})/i);
-      const hash = hashMatch ? hashMatch[1] : (hit.hash || '');
-      if (!hash) continue;
-      const sizeGB = hit.bytes ? hit.bytes / 1073741824 : null;
-      const sizeStr = sizeGB ? sizeGB.toFixed(2) + ' GB' : '';
-      const langLine = getLangLine(hit.title || '');
-      streams.push({
-        infoHash:  hash.toLowerCase(),
-        name:      hit.title || '',
-        title:     `☀️ ${title}${year ? ' (' + year + ')' : ''}\n🌱 ${hit.seeders || 0}\n💾 ${sizeStr}\n🏅 Knaben${langLine ? '\n🔊 ' + langLine : ''}`,
-        url:       magnet,
-        _quality:  getQuality(hit.title || ''),
-        _seeders:  hit.seeders || 0,
-        _sizeGB:   sizeGB,
-        _source:   'knaben',
-        _provider: 'knaben',
-      });
-    }
-    return streams;
-  } catch (_) { return []; }
-}
-
-async function scrapeTorrentio(type, imdbId, season, episode, title, year) {
+// 2. TorrentClaw — using exact same API from the original script
+async function scrapeTorrentClaw(imdbId, type, season, episode) {
   try {
     const isSeries = type === 'tv' || type === 'series';
     const path = isSeries
       ? `series/${imdbId}:${season || 1}:${episode || 1}`
       : `movie/${imdbId}`;
-    const url = `${TORRENTIO_URL}/stream/${path}.json`;
+    const url  = `${TORRENTCLAW_URL}/stream/${path}.json`;
     const data = await fetchWithProxy(url);
     if (!data?.streams?.length) return [];
     return data.streams.map(s => {
-      const origTitle = s.title || '';
-      const providerMatch = origTitle.match(/⚙️\s*(\S+)/);
-      let provider = providerMatch ? providerMatch[1] : 'Unknown';
+      const combined = [s.name || '', s.title || '', s.description || ''].join(' ').replace(/\n/g, ' ');
+      const sizeGB   = getSizeGB(combined, s);
+      const seeders  = getSeeders(combined, s);
+      // Provider from TorrentClaw response
+      let provider = s.provider || s.source || s.indexer || 'TorrentClaw';
+      const known = ['YTS','EZTV','RARBG','Torrentio','Bitmagnet','Prowlarr','TorrentCSV','Nyaa','KAT','LimeTorrents','BitSearch'];
+      const upper = combined.toUpperCase();
+      for (const k of known) { if (upper.includes(k.toUpperCase())) { provider = k; break; } }
+      return {
+        url:       s.url || (s.infoHash ? buildMagnet(s.infoHash, '') : ''),
+        infoHash:  s.infoHash || '',
+        name:      combined,
+        title:     combined,
+        _provider: provider.toLowerCase(),
+        seeds:     seeders,
+        seeders:   seeders,
+        size:      sizeGB ? Math.floor(sizeGB * 1073741824) : 0,
+      };
+    });
+  } catch (_) { return []; }
+}
+
+// 3. Torrentio
+async function scrapeTorrentio(type, imdbId, season, episode) {
+  try {
+    const isSeries = type === 'tv' || type === 'series';
+    const path = isSeries
+      ? `series/${imdbId}:${season || 1}:${episode || 1}`
+      : `movie/${imdbId}`;
+    const data = await fetchWithProxy(`${TORRENTIO_URL}/stream/${path}.json`);
+    if (!data?.streams?.length) return [];
+    return data.streams.map(s => {
+      const provMatch = (s.title || '').match(/⚙️\s*(\S+)/);
+      let provider = provMatch ? provMatch[1] : 'torrentio';
       provider = provider.toLowerCase().replace(/\.(to|com|org|net|io)$/, '');
       if (provider === 'thepiratebay') provider = 'thepiratesbay';
       if (provider === 'nyaa.si')      provider = 'nyaa';
       if (provider === 'limetorrents') provider = 'limetorrent';
       if (provider === 'kat')          provider = 'kickasstorrents';
       const seeders = s.behaviorHints?.seeders
-        ?? (() => { const m = origTitle.match(/👤\s*(\d+)/); return m ? parseInt(m[1], 10) : 0; })();
-      const sizeGB = getSizeGB(s);
-      const langLine = getLangLine(origTitle);
+        ?? (() => { const m = (s.title || '').match(/👤\s*(\d+)/); return m ? parseInt(m[1],10) : 0; })();
+      return { ...s, _provider: provider, seeds: seeders, seeders };
+    });
+  } catch (_) { return []; }
+}
+
+// 4. Knaben
+async function scrapeKnaben(title, year, isSeries, season, episode) {
+  if (!title) return [];
+  try {
+    let query = title;
+    if (year && !isSeries) query += ' ' + year;
+    if (isSeries && season && episode)
+      query += ` S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'00')}`;
+    const categories = isSeries ? [5000000, 5001000] : [2000000, 2001000];
+    const r = await fetch(KNABEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': UA },
+      body: JSON.stringify({ search_type: '75%', search_field: 'title', query, order_by: 'seeders', order_direction: 'desc', categories, from: 0, size: 40, hide_unsafe: true, hide_xxx: true }),
+    });
+    if (!r.ok) return [];
+    const data = await r.json();
+    if (!data?.hits?.length) return [];
+    return data.hits.filter(h => h.magnetUrl || h.hash).map(hit => {
+      const magnet    = hit.magnetUrl || buildMagnet(hit.hash, hit.title || '');
+      const hashMatch = magnet.match(/btih:([a-fA-F0-9]{32,40})/i);
+      const hash      = hashMatch ? hashMatch[1] : (hit.hash || '');
+      const sizeGB    = hit.bytes ? hit.bytes / 1073741824 : null;
       return {
-        ...s,
-        title:     `☀️ ${title}${year ? ' (' + year + ')' : ''}\n🌱 ${seeders}\n💾 ${sizeGB ? sizeGB.toFixed(2) + ' GB' : 'N/A'}\n🏅 ${provider}${langLine ? '\n🔊 ' + langLine : ''}`,
-        url:       s.url || (s.infoHash ? buildMagnet(s.infoHash, title) : ''),
-        _quality:  getQuality(origTitle || s.name || ''),
-        _seeders:  seeders,
-        _sizeGB:   sizeGB,
-        _source:   'torrentio',
-        _provider: provider,
+        infoHash:  hash.toLowerCase(),
+        url:       magnet,
+        name:      hit.title || '',
+        title:     `🌱 ${hit.seeders || 0}\n💾 ${sizeGB ? sizeGB.toFixed(2)+' GB' : ''}\n🔗 Knaben`,
+        _provider: 'knaben',
+        seeds:     hit.seeders || 0,
+        seeders:   hit.seeders || 0,
+        bytes:     hit.bytes || 0,
       };
     });
   } catch (_) { return []; }
 }
 
-async function getStreams(tmdbId, type = 'movie', season = null, episode = null, settings = null) {
+// ── TMDB ─────────────────────────────────────────────────────────────
+
+async function tmdbLookup(tmdbId, type) {
   try {
     const isSeries = type === 'tv' || type === 'series';
-    const meta = await tmdbLookup(tmdbId, type);
-    const imdbId = meta?.imdbId || String(tmdbId);
-    const title  = meta?.title  || '';
-    const year   = meta?.year   || '';
+    const r = await fetch(
+      `https://api.themoviedb.org/3/${isSeries ? 'tv' : 'movie'}/${tmdbId}?api_key=${TMDB_KEY}&append_to_response=external_ids`
+    );
+    if (!r.ok) return null;
+    const d = await r.json();
+    return {
+      imdbId: d.external_ids?.imdb_id || d.imdb_id || String(tmdbId),
+      title:  d.title || d.name || '',
+      year:   (d.release_date || d.first_air_date || '').slice(0, 4),
+    };
+  } catch (_) { return null; }
+}
 
-    const [ytsR, knabenR, torrentioR] = await Promise.allSettled([
+// ── Main ──────────────────────────────────────────────────────────────
+
+async function getStreams(tmdbId, type = 'movie', season = null, episode = null, settings = null) {
+  try {
+    const s        = settings || {};
+    const isSeries = type === 'tv' || type === 'series';
+    const meta     = await tmdbLookup(tmdbId, type);
+    const imdbId   = meta?.imdbId || String(tmdbId);
+    const title    = meta?.title  || '';
+    const year     = meta?.year   || '';
+
+    // Fetch all 4 sources in order: YTS → TorrentClaw → Torrentio → Knaben
+    const [ytsR, clawR, torrentioR, knabenR] = await Promise.allSettled([
       isSeries ? Promise.resolve([]) : scrapeYTS(imdbId, title, year),
+      scrapeTorrentClaw(imdbId, type, season, episode),
+      scrapeTorrentio(type, imdbId, season, episode),
       scrapeKnaben(title, year, isSeries, season, episode),
-      scrapeTorrentio(type, imdbId, season, episode, title, year),
     ]);
 
-    const yts       = ytsR.status       === 'fulfilled' ? (ytsR.value       || []) : [];
-    const knaben    = knabenR.status    === 'fulfilled' ? (knabenR.value    || []) : [];
-    const torrentio = torrentioR.status === 'fulfilled' ? (torrentioR.value || []) : [];
+    const raw = [
+      ...(ytsR.status       === 'fulfilled' ? ytsR.value       || [] : []),
+      ...(clawR.status      === 'fulfilled' ? clawR.value      || [] : []),
+      ...(torrentioR.status === 'fulfilled' ? torrentioR.value || [] : []),
+      ...(knabenR.status    === 'fulfilled' ? knabenR.value    || [] : []),
+    ];
 
-    return processStreams([...yts, ...knaben, ...torrentio], type);
+    // Format each stream
+    const formatted = [];
+    raw.forEach(stream => {
+      const rawText = [stream.name || '', stream.title || ''].join(' ').replace(/\n/g, ' ');
+      const result  = formatStream(stream, rawText, title, isSeries, season || 1, episode || 1, year, s);
+      if (result) formatted.push(result);
+    });
+
+    // Deduplicate by infoHash
+    const seen   = new Set();
+    const unique = formatted.filter(f => {
+      const hash = (f.data.url.match(/btih:([a-f0-9]+)/i) || [])[1] || '';
+      if (!hash) return true;
+      if (seen.has(hash)) return false;
+      seen.add(hash); return true;
+    });
+
+    // Sort
+    unique.sort((a, b) => {
+      if (s.sortBy === 'size')         return b.sizeBytes - a.sizeBytes;
+      if (s.sortBy === 'quality') {
+        if (b.qualityRank !== a.qualityRank) return b.qualityRank - a.qualityRank;
+        return b.seeders - a.seeders;
+      }
+      return b.seeders - a.seeders;
+    });
+
+    // Max 5 per quality group
+    const byQ = {};
+    unique.forEach(f => {
+      const q = getQuality(f.data.name) || 'unknown';
+      if (!byQ[q]) byQ[q] = [];
+      if (byQ[q].length < LINKS_PER_QUALITY) byQ[q].push(f);
+    });
+
+    return Object.values(byQ).flat().map(f => f.data);
+
   } catch (_) { return []; }
 }
 
@@ -309,19 +422,19 @@ async function onSettings() {
     {
       type: 'select', key: 'minQuality', label: 'Minimum Quality',
       options: [
-        { label: 'Any',        value: 'any'   },
-        { label: '720p+',      value: '720p'  },
-        { label: '1080p+',     value: '1080p' },
-        { label: '4K only',    value: '4k'    },
+        { label: 'Any',     value: 'any'   },
+        { label: '720p+',   value: '720p'  },
+        { label: '1080p+',  value: '1080p' },
+        { label: '4K only', value: '4k'    },
       ],
       default: 'any',
     },
     {
       type: 'select', key: 'sortBy', label: 'Sort By',
       options: [
-        { label: 'Seeders',  value: 'seeders' },
-        { label: 'Quality',  value: 'quality' },
-        { label: 'Size',     value: 'size'    },
+        { label: 'Seeders', value: 'seeders' },
+        { label: 'Quality', value: 'quality' },
+        { label: 'Size',    value: 'size'    },
       ],
       default: 'seeders',
     },
